@@ -205,6 +205,8 @@ tempCodeRunnerFile.py
 
 # Training outputs
 checkpoints/
+runs/
+visualizations/
 
 # Ruff stuff:
 .ruff_cache/

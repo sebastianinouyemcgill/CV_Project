@@ -1,89 +1,77 @@
 # CV Project — NYU Depth Estimation
 
-Monocular depth estimation with a U-Net on NYU Depth V2 (`nyu2_train` / `nyu2_test` + CSV splits).
+Monocular depth estimation with a **pretrained ResNet50-UNet** on NYU Depth V2.
 
-## Dataset layout
-
-`NYU_DATA_ROOT` must be the folder that **directly contains** the four items:
-
-```
-$NYU_DATA_ROOT/
-  nyu2_train.csv
-  nyu2_test.csv
-  nyu2_train/
-  nyu2_test/
-```
-
-You can set `NYU_DATA_ROOT` to either that folder or its parent (e.g. `CV_Project` or `CV_Project/data` on Drive).
-
-CSV rows use a `data/` prefix (`data/nyu2_train/...`); the loader strips it and joins under `NYU_DATA_ROOT`.
-
-## Local training (Mac / SSD)
+## Quick start
 
 ```bash
-export NYU_DATA_ROOT="/Volumes/SSD 2/Projects/CV Project/data"   # or project root
-export CHECKPOINT_DIR="./checkpoints"                             # optional
-python smoke_train.py   # quick check
-python train.py         # full run
-```
-
-## Colab + Google Drive (recommended for full training)
-
-The dataset is ~4 GB but ~200k tiny files. **Unzipping on Drive is very slow.** Use this workflow:
-
-1. **On your Mac** — create one archive (once):
-   ```bash
-   cd "/path/to/folder/with/csvs"
-   tar -czf nyu_dataset.tar.gz nyu2_train.csv nyu2_test.csv nyu2_train nyu2_test
-   ```
-2. **Upload** `nyu_dataset.tar.gz` to `My Drive/CV_Project/data/` (Drive for desktop is fine).
-3. **Each Colab session** — open `colab/train_nyu_depth.ipynb`, mount Drive, extract the tar to `/content/nyu_data` (fast local disk), train, save checkpoints to `CV_Project/checkpoints/`.
-
-If you already synced the extracted folders to Drive (no tar), set `MODE = "rsync"` in the notebook to copy `CV_Project/data/` → `/content/nyu_data` once per session.
-
-| Location | Role |
-|----------|------|
-| `CV_Project/data/` on Drive | Long-term storage (tar and/or extracted files) |
-| `/content/nyu_data` in Colab | Fast scratch copy for training |
-| `CV_Project/checkpoints/` on Drive | Saved models (`best_unet.pt`) |
-
-## Setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
+export NYU_DATA_ROOT="/path/to/CV_Project/data"
 pip install -r requirements.txt
+python smoke_train.py          # sanity check
+python train.py                  # full training
+python train.py --resume         # resume latest run (checkpoints/runN/last.pt)
+python evaluate.py --run-name run1
+tensorboard --logdir checkpoints/run1/tensorboard
 ```
 
-## Training size (speed vs quality)
+## Architecture
 
-By default only **8000 random train frames** are used per epoch (not all 50,688). Validation still uses the **full 654 test set**. This is usually enough for a course project and is ~6× faster on Colab.
+- **Default:** `ResNetEncoderUNet` with ImageNet-pretrained ResNet50 encoder + 4-scale UNet decoder
+- **Baseline:** `UNet` (tiny, no pretrain) via `MODEL_NAME=unet`
+- Output: sigmoid → normalized depth in `[0, 1]` (×10 m for metrics)
 
-```bash
-# default: 8000 train samples
-python train.py
+## Loss
 
-# full train set (slow)
-USE_FULL_TRAIN=1 python train.py
-# or
-MAX_TRAIN_SAMPLES=0 python train.py
-```
+Combined depth loss (`losses.py`):
+- Scale-invariant log loss (primary)
+- BerHu (robust regression)
+- Gradient L1 (edge preservation)
+- Edge-aware smoothness (optional, weight 0.01)
 
-## Checkpoints
+## Training defaults
 
-During training, whenever validation RMSE improves, weights are saved to `CHECKPOINT_DIR/best_unet.pt`. The log prints `saved best -> ...` when updated.
+| Setting | Default |
+|---------|---------|
+| Optimizer | AdamW, lr=1e-4, wd=1e-2 |
+| Scheduler | Warmup (2 epochs) + cosine decay |
+| AMP | On (CUDA only) |
+| Grad clip | 1.0 |
+| Train subset | 8000 random frames |
+| Epochs | 20 |
 
-## Evaluation
-
-```bash
-python evaluate.py --checkpoint checkpoints/best_unet.pt
-```
-
-## Config
+## Environment variables
 
 | Variable | Meaning |
 |----------|---------|
-| `NYU_DATA_ROOT` | Path to dataset folder (see layout above) |
-| `CHECKPOINT_DIR` | Where `best_unet.pt` is saved |
-| `MAX_TRAIN_SAMPLES` | Train subset size (default `8000`; `0` = full) |
-| `USE_FULL_TRAIN` | Set to `1` to use all train CSV rows |
+| `NYU_DATA_ROOT` | Dataset folder (`data/` or project root) |
+| `CHECKPOINT_DIR` | Model checkpoints |
+| `MODEL_NAME` | `resnet50` / `resnet34` / `unet` |
+| `PRETRAINED` | `1` or `0` |
+| `MAX_TRAIN_SAMPLES` | Subset size (`0` = full 50k) |
+| `USE_FULL_TRAIN` | `1` to use all train data |
+| `RUN_NAME` | Force folder name (`run1`, `my_exp`); empty = auto `runN` |
+| `SAVE_EVERY_EPOCH` | Save `epochs/epoch_XXX.pt` each epoch (`1` default) |
+
+## Experiment folders
+
+Each training run writes to `CHECKPOINT_DIR/run1/`, `run2/`, …:
+
+- `best.pt` — best validation RMSE
+- `last.pt` — resume training
+- `epochs/epoch_001.pt` — checkpoint every epoch
+- `metrics_curves.png` — loss / RMSE / δ₁ plots (updated each epoch)
+- `metrics_history.json` — full metric log
+- `eval_result.png` — from `evaluate.py`
+
+## Colab
+
+See `colab/train_nyu_depth.ipynb` — stage data to `/content/nyu_data`, train, evaluate.
+
+## Target metrics (NYU indoor)
+
+| Metric | Strong target |
+|--------|---------------|
+| δ₁ | > 0.80 |
+| RMSE | < 0.6 m |
+
+After these improvements, expect δ₁ ~0.55–0.70 on 8k subset / 20 epochs; full 50k training needed for δ₁ > 0.80.
