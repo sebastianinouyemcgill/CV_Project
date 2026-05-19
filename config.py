@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # Folder that directly contains nyu2_train.csv, nyu2_test.csv, nyu2_train/, nyu2_test/.
-_DEFAULT_DATA_ROOT = "/Volumes/SSD 2/Projects/CV Project/data"
+_DEFAULT_DATA_ROOT = "/content/nyu_data"
 
 CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR", "checkpoints"))
 LOG_DIR = Path(os.environ.get("LOG_DIR", "runs"))
