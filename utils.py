@@ -31,8 +31,8 @@ def compute_depth_metrics(pred_m, gt_m, mask):
         "abs_rel": float(abs_rel),
         "rmse": float(rmse),
         "delta1": float((thresh < 1.25).mean()),
-        "delta2": float((thresh < 1.25**2).mean()),
-        "delta3": float((thresh < 1.25**3).mean()),
+        "delta2": float((thresh < 1.25 ** 2).mean()),
+        "delta3": float((thresh < 1.25 ** 3).mean()),
     }
 
 

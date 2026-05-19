@@ -10,9 +10,11 @@ from config import (
     IMAGE_SIZE,
     LEARNING_RATE,
     MAX_DEPTH_M,
+    MAX_TRAIN_SAMPLES,
     NUM_WORKERS,
     TEST_CSV,
     TRAIN_CSV,
+    TRAIN_SUBSAMPLE_SEED,
 )
 from dataset import NYUDepthDataset
 from model import UNet
@@ -40,7 +42,7 @@ def run_epoch(model, loader, optimizer=None):
     model.train(is_train)
 
     total_loss = 0.0
-    metric_sums = {"abs_rel": 0.0, "rmse": 0.0, "delta1": 0.0}
+    metric_sums = {"abs_rel": 0.0, "rmse": 0.0, "delta1": 0.0, "delta2": 0.0, "delta3": 0.0}
     metric_count = 0
 
     for rgb, depth, mask in tqdm(loader, leave=False):
@@ -84,9 +86,19 @@ def main():
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-    train_dataset = NYUDepthDataset(TRAIN_CSV, image_size=IMAGE_SIZE)
+    train_dataset = NYUDepthDataset(
+        TRAIN_CSV,
+        image_size=IMAGE_SIZE,
+        max_samples=MAX_TRAIN_SAMPLES,
+        subsample_seed=TRAIN_SUBSAMPLE_SEED,
+    )
     test_dataset = NYUDepthDataset(TEST_CSV, image_size=IMAGE_SIZE)
-    print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
+    train_note = (
+        f"{len(train_dataset)} (random subset)"
+        if MAX_TRAIN_SAMPLES
+        else f"{len(train_dataset)} (full)"
+    )
+    print(f"Train samples: {train_note}, Test samples: {len(test_dataset)}")
 
     train_loader = DataLoader(
         train_dataset,
@@ -107,21 +119,29 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     best_rmse = float("inf")
+    best_path = CHECKPOINT_DIR / "best_unet.pt"
 
     for epoch in range(EPOCHS):
         train_loss, _ = run_epoch(model, train_loader, optimizer)
         val_loss, val_metrics = run_epoch(model, test_loader)
+
+        saved = ""
+        if val_metrics["rmse"] < best_rmse:
+            best_rmse = val_metrics["rmse"]
+            torch.save(model.state_dict(), best_path)
+            saved = f" | saved best -> {best_path}"
 
         print(
             f"Epoch {epoch + 1}/{EPOCHS} | "
             f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
             f"val_rmse={val_metrics['rmse']:.3f}m | "
             f"val_delta1={val_metrics['delta1']:.3f}"
+            f"{saved}"
         )
 
-        if val_metrics["rmse"] < best_rmse:
-            best_rmse = val_metrics["rmse"]
-            torch.save(model.state_dict(), CHECKPOINT_DIR / "best_unet.pt")
+    if best_path.exists():
+        model.load_state_dict(torch.load(best_path, map_location=DEVICE))
+        print(f"Loaded best checkpoint for visualization (val_rmse={best_rmse:.3f}m)")
 
     model.eval()
     rgb, depth, mask = test_dataset[0]

@@ -31,3 +31,17 @@ BATCH_SIZE = 8
 EPOCHS = 10
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 2
+
+# Train subset: 8000 random frames is enough for this project (~6x faster than 50k).
+# Set MAX_TRAIN_SAMPLES=0 or USE_FULL_TRAIN=1 to use every row in nyu2_train.csv.
+def _parse_max_train_samples():
+    if os.environ.get("USE_FULL_TRAIN", "0") == "1":
+        return None
+    raw = os.environ.get("MAX_TRAIN_SAMPLES", "8000")
+    if raw in ("0", "", "none", "None", "full"):
+        return None
+    return int(raw)
+
+
+MAX_TRAIN_SAMPLES = _parse_max_train_samples()
+TRAIN_SUBSAMPLE_SEED = 42

@@ -1,4 +1,5 @@
 import csv
+import random
 
 import cv2
 import numpy as np
@@ -39,22 +40,33 @@ def load_depth_meters(depth_path: str, max_depth_m: float = MAX_DEPTH_M) -> np.n
 
 
 class NYUDepthDataset(Dataset):
-    def __init__(self, csv_path, image_size=256, max_depth_m=MAX_DEPTH_M, max_samples=None):
+    def __init__(
+        self,
+        csv_path,
+        image_size=256,
+        max_depth_m=MAX_DEPTH_M,
+        max_samples=None,
+        subsample_seed=42,
+    ):
         self.image_size = image_size
         self.max_depth_m = max_depth_m
-        self.samples = []
+        all_samples = []
 
         with open(csv_path, newline="") as f:
             reader = csv.reader(f)
             for row in reader:
                 if len(row) < 2:
                     continue
-                self.samples.append((_resolve_path(row[0]), _resolve_path(row[1])))
-                if max_samples is not None and len(self.samples) >= max_samples:
-                    break
+                all_samples.append((_resolve_path(row[0]), _resolve_path(row[1])))
 
-        if not self.samples:
+        if not all_samples:
             raise RuntimeError(f"No samples listed in {csv_path}")
+
+        if max_samples is not None and len(all_samples) > max_samples:
+            rng = random.Random(subsample_seed)
+            self.samples = rng.sample(all_samples, max_samples)
+        else:
+            self.samples = all_samples
 
     def __len__(self):
         return len(self.samples)

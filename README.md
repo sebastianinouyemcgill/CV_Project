@@ -55,11 +55,35 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Config
+## Training size (speed vs quality)
 
-Edit `config.py` or environment variables:
+By default only **8000 random train frames** are used per epoch (not all 50,688). Validation still uses the **full 654 test set**. This is usually enough for a course project and is ~6× faster on Colab.
+
+```bash
+# default: 8000 train samples
+python train.py
+
+# full train set (slow)
+USE_FULL_TRAIN=1 python train.py
+# or
+MAX_TRAIN_SAMPLES=0 python train.py
+```
+
+## Checkpoints
+
+During training, whenever validation RMSE improves, weights are saved to `CHECKPOINT_DIR/best_unet.pt`. The log prints `saved best -> ...` when updated.
+
+## Evaluation
+
+```bash
+python evaluate.py --checkpoint checkpoints/best_unet.pt
+```
+
+## Config
 
 | Variable | Meaning |
 |----------|---------|
 | `NYU_DATA_ROOT` | Path to dataset folder (see layout above) |
 | `CHECKPOINT_DIR` | Where `best_unet.pt` is saved |
+| `MAX_TRAIN_SAMPLES` | Train subset size (default `8000`; `0` = full) |
+| `USE_FULL_TRAIN` | Set to `1` to use all train CSV rows |
