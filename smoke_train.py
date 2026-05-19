@@ -1,6 +1,8 @@
 """Quick training run to verify the pipeline (subset of NYU, few epochs)."""
 
 import torch
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 
 from config import (
@@ -12,6 +14,7 @@ from config import (
     PRETRAINED,
     TEST_CSV,
     TRAIN_CSV,
+    USE_AMP,
     WEIGHT_DECAY,
 )
 from dataset import NYUDepthDataset
@@ -32,8 +35,11 @@ def main():
     set_seed(SEED)
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     device = get_device()
+
+    USE_AMP_RUNTIME = USE_AMP and device.type == "cuda"
+
     print(f"NYU data root: {DATA_ROOT}")
-    print(f"Device: {device} | Model: {MODEL_NAME}")
+    print(f"Device: {device} | Model: {MODEL_NAME} | AMP: {USE_AMP_RUNTIME}")
 
     train_dataset = NYUDepthDataset(
         TRAIN_CSV, image_size=IMAGE_SIZE, max_samples=TRAIN_SAMPLES, augment=True, normalize=True
@@ -49,14 +55,24 @@ def main():
     model = build_model(MODEL_NAME, pretrained=PRETRAINED).to(device)
     criterion = DepthLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scaler = GradScaler(enabled=USE_AMP_RUNTIME)
 
     import train as train_module
-
     train_module.DEVICE = device
 
     for epoch in range(EPOCHS):
-        train_loss, _, _ = run_epoch(model, train_loader, criterion, optimizer=optimizer, device=device)
-        val_loss, val_metrics, _ = run_epoch(model, test_loader, criterion, device=device)
+        train_loss, _, _ = run_epoch(
+            model, train_loader, criterion,
+            optimizer=optimizer,
+            scaler=scaler,
+            device=device,
+            epoch=epoch,
+        )
+        val_loss, val_metrics, _ = run_epoch(
+            model, test_loader, criterion,
+            device=device,
+            epoch=epoch,
+        )
 
         print(
             f"Epoch {epoch + 1}/{EPOCHS} | "
@@ -66,7 +82,7 @@ def main():
             f"val_delta1={val_metrics.get('delta1', 0):.3f}"
         )
 
-    ckpt = CHECKPOINT_DIR / "smoke_unet.pt"
+    ckpt = CHECKPOINT_DIR / "smoke_resnet.pt"
     torch.save(model.state_dict(), ckpt)
     print(f"Saved {ckpt}")
     print("Smoke training finished successfully.")
