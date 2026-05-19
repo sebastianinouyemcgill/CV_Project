@@ -1,67 +1,137 @@
 import torch
-import torch.nn as nn
-
 from torch.utils.data import DataLoader
-
-from dataset import DepthDataset
-from model import UNet
-from utils import show_prediction, estimate_height
-
 from tqdm import tqdm
 
-
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-dataset = DepthDataset(
-    rgb_dir="data/rgb",
-    depth_dir="data/depth"
+from config import (
+    BATCH_SIZE,
+    CHECKPOINT_DIR,
+    DATA_ROOT,
+    EPOCHS,
+    IMAGE_SIZE,
+    LEARNING_RATE,
+    MAX_DEPTH_M,
+    NUM_WORKERS,
+    TEST_CSV,
+    TRAIN_CSV,
+)
+from dataset import NYUDepthDataset
+from model import UNet
+from utils import (
+    compute_depth_metrics,
+    depth_to_meters,
+    estimate_height,
+    masked_mse_loss,
+    show_prediction,
 )
 
-loader = DataLoader(dataset, batch_size=4, shuffle=True)
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
-model = UNet().to(DEVICE)
 
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+DEVICE = get_device()
 
-EPOCHS = 10
 
-for epoch in range(EPOCHS):
-    model.train()
+def run_epoch(model, loader, optimizer=None):
+    is_train = optimizer is not None
+    model.train(is_train)
 
-    total_loss = 0
+    total_loss = 0.0
+    metric_sums = {"abs_rel": 0.0, "rmse": 0.0, "delta1": 0.0}
+    metric_count = 0
 
-    for rgb, depth in tqdm(loader):
+    for rgb, depth, mask in tqdm(loader, leave=False):
         rgb = rgb.to(DEVICE)
         depth = depth.to(DEVICE)
+        mask = mask.to(DEVICE)
 
         pred = model(rgb)
+        loss = masked_mse_loss(pred, depth, mask)
 
-        loss = criterion(pred, depth)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if is_train:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item()
 
-    print(f"Epoch {epoch+1} Loss: {total_loss / len(loader)}")
+        if not is_train:
+            pred_np = pred.detach().cpu().numpy()
+            gt_np = depth.detach().cpu().numpy()
+            mask_np = mask.detach().cpu().numpy()
+            batch_size = pred_np.shape[0]
+            for i in range(batch_size):
+                pred_m = pred_np[i, 0] * MAX_DEPTH_M
+                gt_m = gt_np[i, 0] * MAX_DEPTH_M
+                metrics = compute_depth_metrics(pred_m, gt_m, mask_np[i, 0])
+                if metrics:
+                    for key in metric_sums:
+                        metric_sums[key] += metrics[key]
+                    metric_count += 1
 
-# visualize one sample
+    avg_loss = total_loss / max(len(loader), 1)
+    avg_metrics = {k: v / max(metric_count, 1) for k, v in metric_sums.items()}
+    return avg_loss, avg_metrics
 
-model.eval()
 
-rgb, depth = dataset[0]
+def main():
+    print(f"NYU data root: {DATA_ROOT}")
+    print(f"Checkpoint dir: {CHECKPOINT_DIR}")
+    print(f"Device: {DEVICE}")
 
-with torch.no_grad():
-    pred = model(rgb.unsqueeze(0).to(DEVICE))
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-show_prediction(
-    rgb,
-    depth,
-    pred.cpu()[0]
-)
+    train_dataset = NYUDepthDataset(TRAIN_CSV, image_size=IMAGE_SIZE)
+    test_dataset = NYUDepthDataset(TEST_CSV, image_size=IMAGE_SIZE)
+    print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
 
-height = estimate_height(pred.cpu()[0].squeeze().numpy())
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=DEVICE == "cuda",
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=DEVICE == "cuda",
+    )
 
-print("Estimated Height:", height)
+    model = UNet().to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    best_rmse = float("inf")
+
+    for epoch in range(EPOCHS):
+        train_loss, _ = run_epoch(model, train_loader, optimizer)
+        val_loss, val_metrics = run_epoch(model, test_loader)
+
+        print(
+            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
+            f"val_rmse={val_metrics['rmse']:.3f}m | "
+            f"val_delta1={val_metrics['delta1']:.3f}"
+        )
+
+        if val_metrics["rmse"] < best_rmse:
+            best_rmse = val_metrics["rmse"]
+            torch.save(model.state_dict(), CHECKPOINT_DIR / "best_unet.pt")
+
+    model.eval()
+    rgb, depth, mask = test_dataset[0]
+    with torch.no_grad():
+        pred = model(rgb.unsqueeze(0).to(DEVICE))
+
+    show_prediction(rgb, depth, pred.cpu()[0])
+    pred_m = depth_to_meters(pred.cpu()[0])
+    print("Estimated depth span (m):", estimate_height(pred_m))
+
+
+if __name__ == "__main__":
+    main()
